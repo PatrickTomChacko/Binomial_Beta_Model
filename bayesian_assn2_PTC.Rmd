@@ -1,0 +1,307 @@
+---
+title: "Bayesian Assn2 PTC"
+author: "Patrick Tom Chacko 22200149"
+date: "2023-02-22"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
+
+knitr::opts_chunk$set(echo = TRUE)
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = 4)
+library(bayesplot)
+```
+```{r}
+kungsan <- read.csv("./kungsan.csv")   #relevant dataset
+```
+#### Q1.
+##### In this question we will first work with the subset of the data corresponding to individuals 18 years or older. The following are additional individuals from the Kung San census for whom their weight was recorded, but their height was not recorded. The objective here is to use the posterior model which we developed in Chapter 3 to estimate the expected posterior height for each individual below 
+
+```{r}
+df_gr18 <- kungsan[(kungsan$age>=18),]   #Subset the data accordingly
+df_gr18['centered_wt'] <- df_gr18$weight -mean(df_gr18$weight)  #centering the predictor
+summary(df_gr18) #to look at summary of new centred weight
+dat_cw <- list(N = NROW(df_gr18),height = df_gr18$height, weight = df_gr18$centered_wt) #input parameters list for our model
+model_cw <- stan(file= "m2.stan", data = dat_cw, iter = 1000, chains = 2, cores = 2) #my system has 2 physical cores, linking the stan model from an external file
+post_cw <- as.data.frame(model_cw)
+print(model_cw, probs = c(0.10, 0.5, 0.9)) #looking at quantiles
+```
+
+```{r}
+f_mu_cw <- function(x) post_cw$alpha + post_cw$beta * x #Linear Regression model
+weight_q <- c(53.3,35.7,48.2,62.9)
+weight_qc <-  weight_q- mean(df_gr18$weight) #center our inputs
+```
+
+##### as well as a corresponding 90% credible interval.
+
+```{r}
+mu1 <- sapply(weight_qc, f_mu_cw)
+
+y_hdi = HDInterval::hdi(mu1, credMass=0.90)
+hpdi_l = y_hdi[1,]
+hpdi_u = y_hdi[2,]
+Answer <- data.frame(weight_q,apply(mu1,2,mean),hpdi_l,hpdi_u)
+colnames(Answer)<-c('Inputted weight','Pred height','90% low','90% hig')
+Answer
+```
+
+#### Q2
+##### Now we will explore a subset of the KungSan dataset, specifically, those individuals aged less than 18 years old. Develop a Bayesian model to analyse this dataset and implement it in Stan.
+
+```{r}
+df_ls18 <- kungsan[(kungsan$age<18),]   #Subset the data accordingly
+summary(df_ls18)
+```
+```{r}
+ggplot() + 
+  geom_density(aes(x = df_ls18$height), fill = 'lightskyblue1') +
+  labs(x = 'height',subtitle = 'Identifying parameters for prior') 
+  
+
+```
+
+First we will try to make a similiar prior density. As we see here the data is close to normal distribution but has two bulges so I am planning to make 2 normal distribution for each peak and superimpose them to get an overall picture.
+```{r}
+s1 <- rnorm(1000,88,35) 
+s2 <- rnorm(1000,120,35)
+s3 <- NULL
+for (p in s1) {
+if(p<110) {s3 <- c(s3,p)}       #I need to remove duplicates above 110 or else there will be bulge in the common region, so I set a threshold of 110
+  
+  }
+length(s3)
+s3<-s3[1:1000]
+
+#summary(s3)
+s <- s1+s3/2        #To make values fall in desired range (I should have sampled instead of taking mean)
+ggplot() + 
+  geom_density(aes(x = s), fill = 'lightskyblue1') +
+  labs(x = 'height',subtitle = 'Identifying parameters for prior')
+  
+```
+
+The above plot doesn't match, let's try one by one.
+```{r}
+s <- rnorm(1000,120,30)
+ggplot() + 
+  geom_density(aes(x = s), fill = 'orange') +
+  labs(x = 'height',subtitle = 'Identifying parameters for prior')
+
+```
+
+Viola! this one closely resembles our prior belief and so we choose our mean as 120 and sd as 30 for prior distribution.
+
+For the analysis part there are many variables in our dataset
+
+```{r}
+plot(df_ls18$age,df_ls18$height, main = 'Age vs Height',ylab = 'Height',xlab = 'Age')
+```
+
+Which we see also follows a linear pattern.
+Let us do our analysis on Weight and Height for this question.
+
+##### Present and interpret your results.
+```{r}
+dat_q2 <- list(N = NROW(df_ls18),height = df_ls18$height, weight = df_ls18$weight) #input parameters list for our model
+model_q2 <- stan(file= "m3.stan", data = dat_q2, iter = 1000, chains = 2, cores = 2) #my system has 2 physical cores, linking the stan model from an external file
+```
+
+
+```{r}
+#print(model_q2, probs=c(0.10,0.9))
+post_wc <- as.data.frame(model_q2)
+#summary(model_q2)
+```
+
+Let us try to find if there is any correlation between alpha and beta as this might interfere with MCMC sampling
+```{r}
+pairs(model_q2, pars=c("alpha", "beta"))
+```
+
+We can see a high level of negative correlation, let us center our weight covariate and try again
+```{r}
+df_ls18$centered_wt <- df_ls18$weight - mean(df_ls18$weight)
+dat_q2_cw <- list(N = NROW(df_ls18),height = df_ls18$height, weight = df_ls18$centered_wt) #input parameters list for our model
+model_q2_cw <- stan(file= "m3.stan", data = dat_q2_cw, iter = 1000, chains = 2, cores = 2) #my system has 2 physical cores, linking the stan model from an external file
+```
+```{r}
+pairs(model_q2_cw, pars=c("alpha", "beta"))
+```
+
+Now we can see that the correlation has been removed. Let us carry out our further analysis.
+
+```{r}
+#print(model_q2_cw,probs = c(0.1,0.9))
+```
+
+I got my intercept(alpha) at height axis to be 108.28, and the value of the slope parameter = 2.72 for the equation
+
+
+ h_i ~ N(mu_i, sigma)
+ mu_i = alpha + beta x_i  
+ alpha ~ N(120, 30)
+ beta ~ N(0,10)
+ sigma ~ U(0,50)
+
+Care should be taken while interpreting the slope as our data's weight has been centred on mean. Thus having a weight 1 kg above the mean would change the height by factor of +2.7
+
+We get a positive value of slope indicating that as the weight increases the height also increases.
+
+Even though we took sigma ~ unif [0,50] we get the most probable value of sigma to be 8.5
+
+We can also see how tight the intervals are corresponding to the parameter, implying that either there is less uncertainty and the given weight value correctly describes the height or else there is less variation in dataset so limited number of observation are there.
+
+Rhat at 1 implies convergence, we got 1 for all parameters.
+
+##### Plot the data together with 90% posterior credible intervals for the mean as well as 90% posterior predictions for predicted heights
+
+Let us post our results to dataframe
+```{r}
+post_q2 <- as.data.frame(model_q2_cw)
+```
+
+Now to find 90% credible interval for my weight variable I am going to predict all the weights and then consider the 0.9 low and high interval for each point
+```{r}
+fun_q2 <- function(y) {post_q2$alpha + post_q2$beta*y}
+mu_q2 <- sapply(df_ls18$centered_wt,fun_q2)
+```
+
+Let us find 90% credible interval for our mean
+
+```{r}
+y_hdi_q2 = HDInterval::hdi(mu_q2, credMass=0.90)
+hpdi_l_q2 <-  y_hdi_q2[1,]
+hpdi_u_q2 <- y_hdi_q2[2,]
+```
+
+```{r}
+#summary(df_ls18$height)     To check if plot lies in conjunction to dataset
+```
+
+Let us also extract our prediction interval so that we can plot at once
+```{r}
+ht_pred_q2 <- extract(model_q2_cw)$y_pred
+ht_phdi_q2 <- HDInterval::hdi(ht_pred_q2, credMass=0.90)
+pi_l_q2 = ht_phdi_q2[1,]
+pi_u_q2 = ht_phdi_q2[2,]
+```
+
+```{r}
+p <- ggplot()
+p2 <- p +
+  geom_point(data = df_ls18,
+             aes(weight, height), shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = df_ls18,aes(weight, ymin = hpdi_l_q2, ymax = hpdi_u_q2),
+              alpha = .1,col = 'red') +
+  geom_abline(data = post_wc,
+              aes(intercept = mean(alpha), slope = mean(beta))) +
+  labs(subtitle="HPDI 90% Credible and Prediction interval") +
+  geom_ribbon(data = df_ls18,
+      mapping = aes(weight, ymin=pi_l_q2, ymax=pi_u_q2), alpha = .05)
+
+p2
+```
+
+
+##### Are you happy with the model fit? If not, explain why and suggest changes that could be made to the model to rectify this.
+
+Although the model does explain a good amount of variation I think it would be helpful if our model was curved instead of being linear. As we can see the line acts as a mean to the data above and below it but would have been really helpful if it traced the path of the dataset. 
+
+Hence I think the linear model is not best fit, we could either use a polynomial regression or use transformation of variables to our input variable that can help us to rectify this problem.
+
+#### Q3
+##### Let’s now modify the posterior model by instead modelling the relationship between height and log(weight). Here we will use the entire kungsan dataset.
+
+```{r}
+summary(kungsan) #file name
+kungsan$log_wt <- log(kungsan$weight)
+```
+```{r}
+ggplot() + 
+  geom_density(aes(x = kungsan$height), fill = 'lightskyblue1') +
+  labs(x = 'height',subtitle = 'Identifying parameters for prior') 
+  
+```
+
+We can see that our data is highly skewed on the left, but after 125 it follows a normal distribution, so for the normal distribution let us take our prior normal to have a mean 155 and sd of 30
+
+
+```{r}
+dat_q3_lw <- list(N = NROW(kungsan),height = kungsan$height, weight = kungsan$log_wt) #input parameters list for our model
+model_q3_lw <- stan(file= "m4.stan", data = dat_q3_lw, iter = 1000, chains = 2, cores = 2)
+```
+
+##### Sample from this model using Stan. Interpret the output from this model.
+```{r}
+ht_pred_q3 <- extract(model_q3_lw)$y_pred
+j3 <-sample(ht_pred_q3,5000)
+plot(density(j3),main = 'Sampling from generated quantities', xlab= c("Height(cm)"))
+```
+
+So now we have sampled from our predicted values, and taking 5000 samples and plotting it we see that considering the log of weight of a person the average height of people in this group is between 140-165cm.
+
+We drew from posterior distribution and then plot it and used Monte Carlo to understand how our distribution looks like.
+
+
+```{r}
+#print(model_q3_lw)
+```
+
+As usual the alpha,beta correspond to the equation
+
+height ~ N(mu,sigma)
+where
+mu = alpha + beta*X
+
+where X is the input feature, here we inputted log of weight and produced a posterior for height.
+predictions of heights also depend upon sigma hence draws from posterior is necessary for prediction.
+
+4 chains of 1000 iterations each start and then alpha, beta, sigma take the mean of the observed values in chain, that explains best fit.
+
+alpha, beta, sigma, mu all have their prior distributions specified in stan file code.
+
+After the model is run and ready to use the generated quantities block would start predicting the values of height if only weight (log) was given, and hence in 4 chains, the mean is found and reported throughout.
+
+##### Estimate a 90% credible interval for the mean and also a 90% posterior prediction intervals.
+
+Let us calculate a 90% credible interval for the mean (height)
+```{r}
+post_q3 <- as.data.frame(model_q3_lw) #saving our values of parameters
+fun_q3 <- function(z){post_q3$alpha + post_q3$beta*z}  #a loop
+mu_3 <- sapply(kungsan$log_wt,fun_q3)                #contains our mean height corresponding to each set of parameters
+height_mean3 <-HDInterval::hdi(mu_3,credMass = 0.90)
+ht_mean_l_q3 <- height_mean3[1,]
+ht_mean_u_q3 <- height_mean3[2,]
+```
+
+Let us also extract our prediction interval
+
+```{r}
+ht_pred_q3 <- extract(model_q3_lw)$y_pred
+ht_pred_q3 <- HDInterval::hdi(ht_pred_q3, credMass=0.90)
+pi_l_q3 = ht_pred_q3[1,]
+pi_u_q3 = ht_pred_q3[2,]
+```
+
+##### Plot height against weight and display credible and prediction interval which you have just generated in the previous part.
+
+```{r}
+p3 <- p +
+  geom_point(data = kungsan,
+             aes(weight, height), shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = kungsan,aes(weight, ymin = ht_mean_l_q3, ymax = ht_mean_u_q3),
+              alpha = .1,col = 'red') +
+   labs(subtitle="HPDI 90% Credible and Prediction interval") +
+ geom_ribbon(data = kungsan,
+      mapping = aes(weight, ymin=pi_l_q3, ymax=pi_u_q3), alpha = .05, col = 'orange')
+
+p3
+```
+
+After doing the log transfomation we can see that our predictor line fits most of the dataset and in a much better way than the previous linear model.
